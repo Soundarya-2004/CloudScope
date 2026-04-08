@@ -1,14 +1,24 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
-from .database import engine, Base, SessionLocal
-from . import models, auth
+from .database import engine
+from . import models
 from .routes import router as app_router
+from .notifier import scheduler
 
-# Create DB tables
+# Create DB tables on startup
 models.Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="AWS Startup Dashboard API")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: start the background scheduler
+    scheduler.start()
+    yield
+    # Shutdown: stop the scheduler cleanly
+    if scheduler.running:
+        scheduler.shutdown(wait=False)
+
+app = FastAPI(title="AWS Startup Dashboard API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -17,11 +27,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-from .notifier import scheduler
-@app.on_event("startup")
-def start_scheduler():
-    scheduler.start()
 
 app.include_router(app_router)
 

@@ -2,43 +2,47 @@ import numpy as np
 from sklearn.linear_model import LinearRegression
 from datetime import datetime, timedelta
 
-def predict_future_costs(dates: list[str], costs: list[float], days_to_predict: int = 30):
+def predict_future_costs(dates: list, costs: list, days_to_predict: int = 30):
     """
     Predict future AWS costs using a simple Linear Regression model based on historical data.
+    Ensures predictions are continuous from the present date.
     """
     if len(costs) < 2:
-        # Not enough data to predict
-        return dates, costs, []
+        # Not enough data to predict, return whatever we have
+        return dates, costs, [None] * len(costs)
 
-    # Prepare data for scikit-learn
-    # X will be days since start (0, 1, 2...)
-    # y will be costs
+    # 1. Prepare historical data
+    # X will be days since the first historical date
     X = np.array(range(len(costs))).reshape(-1, 1)
     y = np.array(costs)
 
+    # 2. Fit model
     model = LinearRegression()
     model.fit(X, y)
 
-    # Predict for the next `days_to_predict` days
+    # 3. Predict for the next `days_to_predict` days
+    # We want the prediction to start from the last historical point to maintain continuity
+    # instead of potentially jumping.
     future_X = np.array(range(len(costs), len(costs) + days_to_predict)).reshape(-1, 1)
-    predicted_costs = model.predict(future_X).tolist()
-    
-    # Ensure no negative costs
-    predicted_costs = [max(0.0, float(c)) for c in predicted_costs]
+    predicted_values = model.predict(future_X).tolist()
 
-    # Generate future dates
-    last_date = datetime.strptime(dates[-1], "%Y-%m-%d")
-    future_dates = [(last_date + timedelta(days=i+1)).strftime("%Y-%m-%d") for i in range(days_to_predict)]
+    # Ensure no negative costs for a startup product
+    predicted_values = [max(0.0, float(c)) for c in predicted_values]
 
-    # We return the original dates + future dates, original costs, and predicted costs
-    # We will pad predicted_costs so that it aligns with the combined timeline
-    all_dates = dates + future_dates
-    
-    # Pad historical costs with None for future dates
-    hist_padded = costs + [None] * days_to_predict
-    
-    # For a continuous line, the first predicted value could start at the end of historical
-    # Alternatively we just pad with None
-    pred_padded = [None] * len(costs) + predicted_costs
-    
-    return all_dates, hist_padded, pred_padded
+    # 4. Generate combined timeline
+    last_date_str = dates[-1]
+    last_date = datetime.strptime(last_date_str, "%Y-%m-%d")
+
+    all_dates = list(dates)
+    for i in range(1, days_to_predict + 1):
+        next_date = (last_date + timedelta(days=i)).strftime("%Y-%m-%d")
+        all_dates.append(next_date)
+
+    # 5. Align costs for visualization
+    # Historical costs are valid for historical dates
+    hist_padded = list(costs) + [None] * days_to_predict
+
+    # Predicted costs start after historical period
+    pred_values_padded = [None] * len(costs) + predicted_values
+
+    return all_dates, hist_padded, pred_values_padded

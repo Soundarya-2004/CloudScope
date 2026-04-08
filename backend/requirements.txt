@@ -3,6 +3,7 @@ uvicorn
 boto3
 scikit-learn
 pandas
+numpy
 cryptography
 sqlalchemy
 pydantic
@@ -10,3 +11,4 @@ python-jose[cryptography]
 passlib[bcrypt]
 python-multipart
 APScheduler
+python-dotenv

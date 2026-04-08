@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import Dashboard from './pages/Dashboard';
-import Settings from './pages/Settings';
 import Login from './pages/Login';
 import { fetchWithConfig } from './api';
 import './index.css';
@@ -47,7 +46,6 @@ function App() {
       <Routes>
         <Route path="/login" element={token ? <Navigate to="/" /> : <Login setToken={setToken} setUser={setUser} />} />
         <Route path="/" element={<ProtectedRoute><Dashboard user={user} /></ProtectedRoute>} />
-        <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
       </Routes>
     </BrowserRouter>
   );

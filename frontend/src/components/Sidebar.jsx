@@ -21,15 +21,7 @@ function Sidebar({ user, setToken, setUser }) {
           className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
         >
           <LayoutDashboard size={20} />
-          Dashboard
-        </NavLink>
-        
-        <NavLink 
-          to="/settings" 
-          className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
-        >
-          <Settings size={20} />
-          AWS Setup
+          Infrastructure
         </NavLink>
       </div>
 

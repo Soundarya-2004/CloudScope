@@ -13,8 +13,11 @@ class AWSConfigResponse(BaseModel):
 
 class PredictorResponse(BaseModel):
     dates: list[str]
-    historical_costs: list[float]
-    predicted_costs: list[float]
+    historical_costs: list[Optional[float]]
+    predicted_costs: list[Optional[float]]
+    total_current_month: float = 0.0
+    total_projected: float = 0.0
+    services: dict[str, float] = {}
 
 class Token(BaseModel):
     access_token: str

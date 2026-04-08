@@ -112,4 +112,19 @@ def list_lambda_functions(session=Depends(get_aws_session)):
 def get_cost_projections(session=Depends(get_aws_session)):
     dates, costs = aws_service.get_historical_costs(session, days=30)
     all_dates, hist_costs, pred_costs = ml_predictor.predict_future_costs(dates, costs, days_to_predict=30)
-    return schemas.PredictorResponse(dates=all_dates, historical_costs=hist_costs, predicted_costs=pred_costs)
+    
+    current_cost_data = aws_service.fetch_current_month_cost(session)
+    
+    # Calculate projected total for the next 30 days including historical
+    # This is a bit simplified, but let's sum the predicted part
+    clean_predicted = [c for c in pred_costs if c is not None]
+    projected_sum = sum(clean_predicted) if clean_predicted else 0.0
+    
+    return schemas.PredictorResponse(
+        dates=all_dates, 
+        historical_costs=hist_costs, 
+        predicted_costs=pred_costs,
+        total_current_month=current_cost_data['total'],
+        total_projected=projected_sum,
+        services=current_cost_data['services']
+    )
