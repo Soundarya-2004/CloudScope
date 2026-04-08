@@ -93,8 +93,9 @@ def get_historical_costs(session, days: int = 30):
         # Return realistic trend if API fails (e.g. Cost Explorer not enabled)
         dates = [(start + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(days)]
         import random
-        base = 1.2
-        costs = [max(0.0, base + (i * 0.08) + random.uniform(-0.1, 0.1)) for i in range(days)]
+        base = 1.15
+        # Use a much smaller growth factor (0.005 instead of 0.08) for a more realistic startup baseline
+        costs = [max(0.0, base + (i * 0.005) + random.uniform(-0.05, 0.05)) for i in range(days)]
         return dates, costs
 
 def fetch_current_month_cost(session):

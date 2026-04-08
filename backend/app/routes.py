@@ -110,21 +110,41 @@ def list_lambda_functions(session=Depends(get_aws_session)):
 # Cost
 @router.get("/aws/cost", response_model=schemas.PredictorResponse)
 def get_cost_projections(session=Depends(get_aws_session)):
+    # 1. Get historical daily costs (last 30 days)
     dates, costs = aws_service.get_historical_costs(session, days=30)
+    
+    # 2. Get predictions for the next 30 days
     all_dates, hist_costs, pred_costs = ml_predictor.predict_future_costs(dates, costs, days_to_predict=30)
     
+    # 3. Get actual spend for CURRENT month so far
     current_cost_data = aws_service.fetch_current_month_cost(session)
+    actual_spent = current_cost_data['total']
     
-    # Calculate projected total for the next 30 days including historical
-    # This is a bit simplified, but let's sum the predicted part
+    # 4. Calculate "Projected Monthly Total" (Actual spent so far + predicted for REMAINING days of this month)
+    # This is more intuitive for users than just a "next 30 days" sum.
+    now = datetime.datetime.utcnow()
+    import calendar
+    _, last_day = calendar.monthrange(now.year, now.month)
+    remaining_days = last_day - now.day
+    
+    # Filter predicted costs for the remaining days of the current month
+    # In our prediction list, index 0...len(costs)-1 is historical. 
+    # Remaining prediction starts at index len(costs).
     clean_predicted = [c for c in pred_costs if c is not None]
-    projected_sum = sum(clean_predicted) if clean_predicted else 0.0
+    
+    if remaining_days > 0 and clean_predicted:
+        # Sum only the predicted costs for the rest of THIS month
+        projected_remainder = sum(clean_predicted[:remaining_days])
+    else:
+        projected_remainder = 0.0
+        
+    eom_projection = actual_spent + projected_remainder
     
     return schemas.PredictorResponse(
         dates=all_dates, 
         historical_costs=hist_costs, 
         predicted_costs=pred_costs,
-        total_current_month=current_cost_data['total'],
-        total_projected=projected_sum,
+        total_current_month=actual_spent,
+        total_projected=eom_projection,
         services=current_cost_data['services']
     )
