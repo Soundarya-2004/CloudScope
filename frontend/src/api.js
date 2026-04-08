@@ -1,7 +1,7 @@
 export const API_URL = "http://localhost:8000";
 
 export const fetchWithConfig = async (endpoint, options = {}) => {
-  const token = localStorage.getItem('token');
+  const token = sessionStorage.getItem('token');
   const headers = { ...options.headers };
   
   if (token) {
@@ -19,7 +19,7 @@ export const fetchWithConfig = async (endpoint, options = {}) => {
 
   if (!response.ok) {
     if (response.status === 401) {
-      localStorage.removeItem('token');
+      sessionStorage.removeItem('token');
       window.location.href = '/login';
     }
     const errorData = await response.json().catch(() => ({}));
