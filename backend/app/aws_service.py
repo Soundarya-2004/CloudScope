@@ -163,9 +163,18 @@ def fetch_s3_buckets(session):
         ] if "AccessDenied" in str(e) else []
 
 def delete_s3_bucket(session, bucket_name: str):
-    s3 = session.client('s3')
+    s3_resource = session.resource('s3')
+    bucket = s3_resource.Bucket(bucket_name)
     try:
-        s3.delete_bucket(Bucket=bucket_name)
+        # 1. Delete all object versions (required for versioned buckets)
+        bucket.object_versions.delete()
+        
+        # 2. Delete all objects (already handled by object_versions.delete() mostly, 
+        # but good for safety in non-versioned)
+        bucket.objects.all().delete()
+        
+        # 3. Finally delete the bucket itself
+        bucket.delete()
         return True
     except Exception as e:
         print(f"Error deleting S3 bucket: {e}")

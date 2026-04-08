@@ -33,7 +33,7 @@ function Login({ setToken, setUser }) {
       }
 
       const data = await response.json();
-      localStorage.setItem('token', data.access_token);
+      sessionStorage.setItem('token', data.access_token);
       setToken(data.access_token);
 
       // fetch (dummy) user info so the UI doesn't crash

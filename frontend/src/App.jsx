@@ -7,7 +7,7 @@ import { fetchWithConfig } from './api';
 import './index.css';
 
 function App() {
-  const [token, setToken] = useState(localStorage.getItem('token'));
+  const [token, setToken] = useState(sessionStorage.getItem('token'));
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -19,7 +19,7 @@ function App() {
           setUser(userRes);
         } catch (err) {
           setToken(null);
-          localStorage.removeItem('token');
+          sessionStorage.removeItem('token');
         }
       }
       setLoading(false);
