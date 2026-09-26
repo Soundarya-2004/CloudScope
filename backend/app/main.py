@@ -1,24 +1,36 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from .database import engine
-from . import models
+from .database import engine, get_db
+from . import models, schemas, database, auth
 from .routes import router as app_router
 from .notifier import scheduler
 
-# Create DB tables on startup
+# Create all database tables on startup
 models.Base.metadata.create_all(bind=engine)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: start the background scheduler
-    scheduler.start()
+    # Startup: initialize background scheduler if needed
+    if not scheduler.running:
+        try:
+            scheduler.start()
+        except Exception:
+            pass
     yield
-    # Shutdown: stop the scheduler cleanly
+    # Shutdown: cleanly shutdown scheduler
     if scheduler.running:
-        scheduler.shutdown(wait=False)
+        try:
+            scheduler.shutdown(wait=False)
+        except Exception:
+            pass
 
-app = FastAPI(title="AWS Startup Dashboard API", lifespan=lifespan)
+app = FastAPI(
+    title="CloudScope — Autonomous AWS Cloud Cost Cleanup Agent API",
+    version="1.0.0",
+    description="Real-time AWS Cloud Cost Janitor Agent with Human-in-the-Loop Approval Gate and Sandboxed Execution",
+    lifespan=lifespan
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,6 +42,21 @@ app.add_middleware(
 
 app.include_router(app_router)
 
+@app.post("/auth/aws-login")
+def aws_login_alias(request: schemas.AWSConnectRequest, db = Depends(database.get_db)):
+    from .routes import aws_login
+    return aws_login(request, db)
+
+@app.get("/auth/me", response_model=schemas.UserResponse)
+def read_current_user_alias(current_user: models.User = Depends(auth.get_current_user)):
+    return schemas.UserResponse(username=current_user.username, role=current_user.role)
+
 @app.get("/")
 def read_root():
-    return {"status": "ok", "message": "AWS Startup Dashboard API"}
+    return {
+        "status": "ok",
+        "service": "CloudScope — Autonomous AWS Cloud Cost Cleanup Agent",
+        "version": "1.0.0",
+        "theme": "Cloud Cost Janitor",
+        "hackathon": "Agents That Act — TrueFoundry × Polaris / HackCulture"
+    }

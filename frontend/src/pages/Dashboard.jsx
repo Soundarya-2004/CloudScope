@@ -1,371 +1,557 @@
 import { useState, useEffect } from 'react';
+import { 
+  Server, Box, Zap, DollarSign, TrendingDown, ShieldAlert, 
+  CheckCircle, RefreshCw, ArrowRight, Bot, AlertTriangle, Clock,
+  Trash2, X, AlertCircle, Sparkles, HardDrive, Cpu, Database, Radio, Cloud
+} from 'lucide-react';
 import { fetchWithConfig } from '../api';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, AreaChart, Area } from 'recharts';
-import { AlertCircle, Server, DollarSign, Database, Box, Play, Square, Activity, Trash2, Zap, Clock, RefreshCw } from 'lucide-react';
 
 function Dashboard({ user }) {
-  const [activeTab, setActiveTab] = useState('Overview');
-  const [data, setData] = useState({
-    ec2: [], s3: [], rds: [], lambda: []
-  });
-  const [costs, setCosts] = useState(null);
+  const [identity, setIdentity] = useState(null);
+  const [costSummary, setCostSummary] = useState(null);
+  const [latestPlan, setLatestPlan] = useState(null);
+  const [latestRun, setLatestRun] = useState(null);
+  const [approvals, setApprovals] = useState([]);
+  const [runningResources, setRunningResources] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [lastUpdated, setLastUpdated] = useState(null);
-  const [status, setStatus] = useState({
-    ec2: 'ok', s3: 'ok', rds: 'ok', lambda: 'ok', cost: 'ok'
-  });
+  const [scanningLive, setScanningLive] = useState(false);
 
-  const isAdmin = user?.role === 'Admin';
+  // Direct Deletion Modal State
+  const [selectedForDelete, setSelectedForDelete] = useState(null);
+  const [deleteConfirmed, setDeleteConfirmed] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteResult, setDeleteResult] = useState(null);
 
-  const loadData = async () => {
-    setLoading(true);
+  const loadDashboardData = async (forceScan = false) => {
+    if (forceScan) setScanningLive(true);
+    else setLoading(true);
+
     try {
-      const results = await Promise.allSettled([
-        fetchWithConfig('/aws/ec2'),
-        fetchWithConfig('/aws/s3'),
-        fetchWithConfig('/aws/rds'),
-        fetchWithConfig('/aws/lambda'),
-        fetchWithConfig('/aws/cost')
+      const [idData, costData, planData, runsData, appsData, resData] = await Promise.allSettled([
+        fetchWithConfig('/aws/identity'),
+        fetchWithConfig('/cost/summary'),
+        fetchWithConfig('/plans/latest'),
+        fetchWithConfig('/agent/runs'),
+        fetchWithConfig('/approvals?status_filter=PENDING'),
+        fetchWithConfig(forceScan ? '/resources/scan' : '/resources', { method: forceScan ? 'POST' : 'GET' })
       ]);
 
-      const [ec2Res, s3Res, rdsRes, lambdaRes, costRes] = results;
-
-      setData({
-        ec2: ec2Res.status === 'fulfilled' ? (ec2Res.value.instances || []) : [],
-        s3: s3Res.status === 'fulfilled' ? (Array.isArray(s3Res.value) ? s3Res.value : []) : [],
-        rds: rdsRes.status === 'fulfilled' ? (Array.isArray(rdsRes.value) ? rdsRes.value : []) : [],
-        lambda: lambdaRes.status === 'fulfilled' ? (Array.isArray(lambdaRes.value) ? lambdaRes.value : []) : []
-      });
-
-      setStatus({
-        ec2: ec2Res.status === 'fulfilled' ? 'ok' : 'error',
-        s3: s3Res.status === 'fulfilled' ? 'ok' : 'error',
-        rds: rdsRes.status === 'fulfilled' ? 'ok' : 'error',
-        lambda: lambdaRes.status === 'fulfilled' ? 'ok' : 'error',
-        cost: costRes.status === 'fulfilled' ? 'ok' : 'error'
-      });
-
-      if (costRes.status === 'fulfilled') {
-        setCosts(costRes.value);
+      if (idData.status === 'fulfilled') setIdentity(idData.value);
+      if (costData.status === 'fulfilled') setCostSummary(costData.value);
+      if (planData.status === 'fulfilled') setLatestPlan(planData.value);
+      if (runsData.status === 'fulfilled' && runsData.value.length > 0) setLatestRun(runsData.value[0]);
+      if (appsData.status === 'fulfilled') setApprovals(appsData.value || []);
+      
+      if (resData.status === 'fulfilled') {
+        const val = resData.value;
+        if (forceScan && val.resources) {
+          setRunningResources(val.resources);
+        } else {
+          setRunningResources(Array.isArray(val) ? val : []);
+        }
       }
-      setLastUpdated(new Date().toLocaleTimeString());
     } catch (err) {
-      console.error("Dashboard load error:", err);
+      console.error("Dashboard data load error:", err);
     }
     setLoading(false);
+    setScanningLive(false);
   };
 
-  useEffect(() => { loadData(); }, []);
+  useEffect(() => {
+    loadDashboardData();
+  }, []);
 
-  const handleAction = async (endpoint, message) => {
-    if (!isAdmin) {
-      alert("Admin privileges required for this action.");
+  const handleApproveAllPending = async () => {
+    if (approvals.length === 0) return;
+    if (!window.confirm(`CRITICAL: Are you sure you want to approve and automatically terminate all ${approvals.length} pending resources?`)) {
       return;
     }
-    if (!window.confirm(message)) return;
+    setLoading(true);
+    for (const item of approvals) {
+      try {
+        await fetchWithConfig(`/approvals/${item.id}/approve`, {
+          method: 'POST',
+          body: JSON.stringify({ reason: 'Approved & Auto-Terminated from Dashboard', auto_execute: true })
+        });
+      } catch (err) {
+        console.error(`Auto-terminate error for ${item.id}:`, err);
+      }
+    }
+    loadDashboardData();
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!selectedForDelete || !deleteConfirmed) return;
+    setDeleting(true);
+    setDeleteResult(null);
     try {
-      const method = endpoint.includes('delete') ? 'DELETE' : 'POST';
-      await fetchWithConfig(endpoint, { method });
-      loadData();
+      const res = await fetchWithConfig(`/resources/${selectedForDelete.resource_id}/delete`, {
+        method: 'POST',
+        body: JSON.stringify({
+          resource_type: selectedForDelete.resource_type,
+          region: selectedForDelete.region,
+          confirmation: true,
+          reason: 'User directly terminated component via CloudScope Dashboard'
+        })
+      });
+      setDeleteResult({
+        success: true,
+        message: res.message || 'Component successfully terminated and verified in AWS.'
+      });
+      loadDashboardData();
     } catch (err) {
-      alert(`Action failed: ${err.message}`);
+      setDeleteResult({
+        success: false,
+        error: err.message || 'Failed to terminate component.'
+      });
+    }
+    setDeleting(false);
+  };
+
+  const renderServiceIcon = (type) => {
+    switch (type.toLowerCase()) {
+      case 'ec2': return <Server size={16} color="#6c5ce7" />;
+      case 'ebs': return <Box size={16} color="#f39c12" />;
+      case 'elb': return <Zap size={16} color="#2ed573" />;
+      case 'eip': return <Radio size={16} color="#00cec9" />;
+      case 'rds': return <Database size={16} color="#e84393" />;
+      case 's3': return <HardDrive size={16} color="#0984e3" />;
+      case 'lambda': return <Cpu size={16} color="#fdcb6e" />;
+      default: return <Cloud size={16} color="#a29bfe" />;
     }
   };
 
-  const chartData = [];
-  if (costs && costs.dates) {
-    for (let i = 0; i < costs.dates.length; i++) {
-      const dateObj = new Date(costs.dates[i]);
-      chartData.push({
-        date: dateObj.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
-        fullDate: costs.dates[i],
-        historical: costs.historical_costs[i],
-        predicted: costs.predicted_costs[i]
-      });
-    }
-  }
-
-  const runningCount = data.ec2.filter(i => i.state === 'running').length;
-  const bucketCount = data.s3.length;
-  const activeRDS = data.rds.filter(i => i.state === 'available').length;
-  const lambdaCount = data.lambda.length;
-
-  if (loading && !lastUpdated) return (
-    <div className="flex-col center" style={{ height: '80vh' }}>
-      <RefreshCw className="animate-spin mb-4" size={40} color="var(--accent-color)" />
-      <div className="text-secondary">Synchronizing with AWS Infrastructure...</div>
-    </div>
-  );
+  const pendingCount = approvals.length;
 
   return (
-    <div className="fade-in pb-10">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
+    <div className="fade-in pb-12">
+      {/* HEADER */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24, flexWrap: 'wrap', gap: 16 }}>
         <div>
-          <h1>Infrastructure Dashboard</h1>
-          <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
-            <Clock size={12} className="inline mr-1" /> Last synced at {lastUpdated}
+          <h1 style={{ margin: 0 }}>CloudScope Dashboard</h1>
+          <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginTop: 4 }}>
+            Autonomous Cloud Cost Janitor — Live Account Oversight, Waste Remediation & Component Deletion
           </p>
         </div>
-        <button onClick={loadData} className="btn btn-sm" style={{ background: 'rgba(108, 92, 231, 0.1)', color: 'var(--accent-color)' }}>
-          <RefreshCw size={14} className="mr-1" /> Refresh
-        </button>
-      </div>
 
-      {/* TABS */}
-      <div className="tabs-container" style={{ display: 'flex', gap: 16, marginBottom: 24, borderBottom: '1px solid #ffffff15', paddingBottom: 12 }}>
-        {['Overview', 'EC2', 'S3', 'RDS', 'Lambda'].map(t => (
-          <button
-            key={t}
-            className={`tab-btn ${activeTab === t ? 'active' : ''}`}
-            onClick={() => setActiveTab(t)}
-            style={{
-              background: 'transparent', border: 'none', color: activeTab === t ? '#fff' : '#a0a4a8',
-              fontSize: 16, fontWeight: activeTab === t ? '600' : '400', cursor: 'pointer', padding: '8px 16px',
-              borderBottom: activeTab === t ? '2px solid var(--accent-color)' : '2px solid transparent',
-              display: 'flex', alignItems: 'center', gap: 8
-            }}
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button 
+            onClick={() => loadDashboardData(true)} 
+            disabled={scanningLive}
+            className="btn btn-primary btn-sm"
+            style={{ display: 'flex', alignItems: 'center', gap: 6 }}
           >
-            {t === 'Overview' && <Activity size={16} />}
-            {t === 'EC2' && <Server size={16} />}
-            {t === 'S3' && <Box size={16} />}
-            {t === 'RDS' && <Database size={16} />}
-            {t === 'Lambda' && <Zap size={16} />}
-            {t}
-            {status[t.toLowerCase()] === 'error' && <AlertCircle size={12} color="var(--danger-color)" />}
+            {scanningLive ? <RefreshCw className="animate-spin" size={14} /> : <Sparkles size={14} />}
+            <span>{scanningLive ? "Scanning Live..." : "Scan AWS Infrastructure"}</span>
           </button>
-        ))}
+          <button onClick={() => loadDashboardData(false)} className="btn btn-sm">
+            <RefreshCw size={14} className="mr-1" /> Sync
+          </button>
+          <a href="/agent" className="btn btn-primary btn-sm" style={{ textDecoration: 'none', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Bot size={14} /> Open Agent Console
+          </a>
+        </div>
       </div>
 
-      {activeTab === 'Overview' && (
-        <div className="animate-fade-in">
-          <div className="dashboard-grid">
-            <div className="glass-panel stat-card" onClick={() => setActiveTab('EC2')} style={{ cursor: 'pointer' }}>
-              <h3 style={{ color: '#a0a4a8' }}><Server size={18} className="inline mr-1" /> Running EC2</h3>
-              <div className="stat-value">{runningCount}</div>
-              <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 8 }}>Active instances in {user?.aws_region || 'us-east-1'}</div>
-            </div>
-            <div className="glass-panel stat-card" onClick={() => setActiveTab('S3')} style={{ cursor: 'pointer' }}>
-              <h3 style={{ color: '#a0a4a8' }}><Box size={18} className="inline mr-1" /> S3 Buckets</h3>
-              <div className="stat-value">{bucketCount}</div>
-              <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 8 }}>Global storage resources</div>
-            </div>
-            <div className="glass-panel stat-card" onClick={() => setActiveTab('RDS')} style={{ cursor: 'pointer' }}>
-              <h3 style={{ color: '#a0a4a8' }}><Database size={18} className="inline mr-1" /> Active RDS</h3>
-              <div className="stat-value">{activeRDS}</div>
-              <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 8 }}>Managed database clusters</div>
-            </div>
-            <div className="glass-panel stat-card">
-              <h3 style={{ color: '#a0a4a8' }}><DollarSign size={18} className="inline mr-1" /> Month-to-Date</h3>
-              <div className="stat-value" style={{ color: 'var(--accent-color)' }}>${costs?.total_current_month?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '0.00'}</div>
-              <div style={{ fontSize: 12, color: 'var(--success-color)', marginTop: 8 }}>Real-time Cost Explorer data</div>
-            </div>
-          </div>
-
-          <div className="glass-panel" style={{ marginBottom: '32px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 16 }}>
+      {/* HUMAN APPROVAL BANNER IF PENDING */}
+      {pendingCount > 0 && (
+        <div className="glass-panel animate-fade-in" style={{
+          marginBottom: 24, padding: 20,
+          background: 'linear-gradient(135deg, rgba(243, 156, 18, 0.15) 0%, rgba(231, 76, 60, 0.15) 100%)',
+          border: '1px solid rgba(243, 156, 18, 0.4)'
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <ShieldAlert size={28} color="#f39c12" />
               <div>
-                <h2>Cost Trend & ML Forecast</h2>
-                <div style={{ color: '#a0a4a8', fontSize: 13 }}>Predictive analysis for the next 30 days</div>
-              </div>
-              <div className="glass-panel" style={{ padding: '12px 20px', background: 'rgba(108, 92, 231, 0.1)', border: '1px solid rgba(108, 92, 231, 0.2)' }}>
-                <span style={{ color: '#a0a4a8', fontSize: 13 }}>Projected Monthly Total: </span>
-                <span style={{ color: 'var(--accent-color)', fontWeight: '800', fontSize: 22, marginLeft: 8 }}>${costs?.total_projected?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '0.00'}</span>
-              </div>
-            </div>
-            <div style={{ width: '100%', height: 350, marginTop: 24 }}>
-              {chartData.length > 0 ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={chartData}>
-                    <defs>
-                      <linearGradient id="colorHist" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#2ed573" stopOpacity={0.3} />
-                        <stop offset="95%" stopColor="#2ed573" stopOpacity={0} />
-                      </linearGradient>
-                      <linearGradient id="colorPred" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#6c5ce7" stopOpacity={0.3} />
-                        <stop offset="95%" stopColor="#6c5ce7" stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#ffffff0a" />
-                    <XAxis dataKey="date" stroke="#a0a4a8" fontSize={11} tickMargin={10} axisLine={false} tickLine={false} />
-                    <YAxis stroke="#a0a4a8" fontSize={11} tickFormatter={(v) => `$${v}`} axisLine={false} tickLine={false} />
-                    <Tooltip
-                      contentStyle={{ backgroundColor: 'rgba(15, 16, 20, 0.95)', backdropFilter: 'blur(10px)', border: '1px solid #ffffff15', borderRadius: '12px', boxShadow: '0 10px 30px rgba(0,0,0,0.5)' }}
-                      itemStyle={{ fontSize: 13 }}
-                    />
-                    <Legend iconType="circle" wrapperStyle={{ paddingTop: 20 }} />
-                    <Area type="monotone" dataKey="historical" stroke="#2ed573" strokeWidth={3} fillOpacity={1} fill="url(#colorHist)" name="Actual Cost" dot={{ r: 2 }} />
-                    <Area type="monotone" dataKey="predicted" stroke="#6c5ce7" strokeWidth={3} strokeDasharray="5 5" fillOpacity={1} fill="url(#colorPred)" name="ML Projection" />
-                  </AreaChart>
-                </ResponsiveContainer>
-              ) : (
-                <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center' }}>
-                  <div className="flex-col center">
-                    <AlertCircle size={32} color="#a0a4a8" className="mb-2" />
-                    <p style={{ color: 'var(--text-secondary)' }}>Initializing Cost Explorer. AWS data may take 24h to populate.</p>
-                  </div>
+                <div style={{ fontWeight: 800, color: '#f39c12', fontSize: 16 }}>
+                  {pendingCount} DESTRUCTIVE ACTIONS REQUIRE HUMAN APPROVAL
                 </div>
-              )}
-            </div>
-          </div>
-
-          {costs?.services && Object.keys(costs.services).length > 0 && (
-            <div className="glass-panel animate-fade-in" style={{ marginBottom: '32px' }}>
-              <h2>Resource Cost Breakdown</h2>
-              <div className="grid-3" style={{ marginTop: 16, display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 16 }}>
-                {Object.entries(costs.services).map(([service, amount]) => (
-                  <div key={service} className="stat-card" style={{ padding: 20, background: '#ffffff03', borderRadius: '12px', border: '1px solid #ffffff08' }}>
-                    <div style={{ fontSize: 12, color: '#a0a4a8', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>{service}</div>
-                    <div style={{ fontSize: 24, fontWeight: '800', color: '#fff' }}>${amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
-                    <div style={{ width: '100%', height: 4, background: '#ffffff0a', borderRadius: 2, marginTop: 12 }}>
-                      <div style={{ width: `${Math.min(100, (amount / costs.total_current_month) * 100)}%`, height: '100%', background: 'var(--accent-color)', borderRadius: 2 }}></div>
-                    </div>
-                  </div>
-                ))}
+                <div style={{ fontSize: 13, color: '#e0e0e0', marginTop: 2 }}>
+                  The agent identified wasteful resources and paused at the approval gate. Potential savings: 
+                  <strong style={{ color: '#2ed573' }}> ${latestPlan?.total_monthly_savings?.toFixed(2) || '0.00'}/mo</strong>
+                </div>
               </div>
             </div>
-          )}
-        </div>
-      )}
 
-      {activeTab === 'EC2' && (
-        <div className="glass-panel animate-fade-in">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <h2>Compute Instances (EC2)</h2>
-            <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-              <span className="status-badge status-running" style={{ fontSize: 11 }}>Total: {data.ec2.length}</span>
-              {!isAdmin && <span style={{ fontSize: 12, color: 'var(--danger-color)' }}>View-only Mode</span>}
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <button 
+                onClick={handleApproveAllPending}
+                className="btn btn-sm btn-danger"
+                style={{
+                  background: 'linear-gradient(135deg, #ff4757 0%, #e040fb 100%)',
+                  color: '#fff', fontWeight: 800, display: 'flex', alignItems: 'center', gap: 6, padding: '8px 16px'
+                }}
+              >
+                <Zap size={14} /> Approve & Auto-Terminate All ({pendingCount})
+              </button>
+              <a href="/approvals" className="btn btn-primary" style={{ padding: '8px 18px', textDecoration: 'none' }}>
+                Review Approvals <ArrowRight size={14} className="inline ml-1" />
+              </a>
             </div>
           </div>
-          <div className="table-container mt-4">
-            <table>
-              <thead>
-                <tr>
-                  <th>Instance Name</th><th>Instance ID</th><th>Type</th><th>Region</th><th>Status</th><th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.ec2.map(inst => (
-                  <tr key={inst.id}>
-                    <td style={{ fontWeight: '700', color: '#fff' }}>{inst.name}</td>
-                    <td style={{ color: 'var(--text-secondary)', fontFamily: 'monospace' }}>{inst.id}</td>
-                    <td><code style={{ background: '#ffffff0a', padding: '2px 6px', borderRadius: 4 }}>{inst.type}</code></td>
-                    <td style={{ color: '#a0a4a8' }}>{user?.aws_region || 'us-east-1'}</td>
-                    <td><span className={`status-badge status-${inst.state === 'running' ? 'running' : 'stopped'}`}>{inst.state}</span></td>
-                    <td>
-                      {inst.state !== 'terminated' ? (
-                        <button onClick={() => handleAction(`/aws/ec2/terminate/${inst.id}`, `Terminate EC2 instance ${inst.id}?`)} className="btn btn-danger btn-sm" disabled={!isAdmin}>
-                          <Trash2 size={14} className="mr-1" /> Terminate
-                        </button>
-                      ) : <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>Finalized</span>}
-                    </td>
-                  </tr>
-                ))}
-                {data.ec2.length === 0 && <tr><td colSpan="6" style={{ textAlign: 'center', padding: 40, color: 'var(--text-secondary)' }}>No active EC2 instances found in this region.</td></tr>}
-              </tbody>
-            </table>
-          </div>
         </div>
       )}
 
-      {activeTab === 'S3' && (
-        <div className="glass-panel animate-fade-in">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <h2>Object Storage (S3)</h2>
-            <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-              <span className="status-badge status-running" style={{ fontSize: 11 }}>Buckets: {data.s3.length}</span>
-              {!isAdmin && <span style={{ fontSize: 12, color: 'var(--danger-color)' }}>View-only Mode</span>}
+      {/* TOP STAT CARDS */}
+      <div className="dashboard-grid" style={{ marginBottom: 24 }}>
+        <div className="glass-panel stat-card">
+          <h3 style={{ color: '#a0a4a8' }}>AWS Account</h3>
+          <div className="stat-value" style={{ fontSize: 20, fontFamily: 'monospace' }}>
+            {identity?.account_id || 'Connecting...'}
+          </div>
+          <div style={{ fontSize: 11, color: '#a0a4a8', marginTop: 4 }}>
+            {identity?.region || 'us-east-1'} • Mode: <span style={{ color: identity?.agent_mode === 'ACTION' ? '#ff4757' : '#2ed573', fontWeight: 700 }}>{identity?.agent_mode}</span>
+          </div>
+        </div>
+
+        <div className="glass-panel stat-card">
+          <h3 style={{ color: '#a0a4a8' }}>
+            <DollarSign size={16} className="inline mr-1" /> Monthly Spend
+          </h3>
+          <div className="stat-value">
+            ${costSummary?.total_monthly_spend?.toFixed(2) || '0.00'}
+          </div>
+          <div style={{ fontSize: 11, color: '#a0a4a8', marginTop: 4 }}>
+            Live Cost Explorer Data
+          </div>
+        </div>
+
+        <div className="glass-panel stat-card">
+          <h3 style={{ color: '#a0a4a8' }}>
+            <TrendingDown size={16} className="inline mr-1" /> Monthly Savings
+          </h3>
+          <div className="stat-value" style={{ color: '#2ed573' }}>
+            ${costSummary?.potential_monthly_savings?.toFixed(2) || '0.00'}
+          </div>
+          <div style={{ fontSize: 11, color: '#2ed573', marginTop: 4 }}>
+            ${costSummary?.potential_annual_savings?.toFixed(2) || '0.00'}/yr annualized
+          </div>
+        </div>
+
+        <div className="glass-panel stat-card">
+          <h3 style={{ color: '#a0a4a8' }}>
+            <Server size={16} className="inline mr-1" /> Resources Scanned
+          </h3>
+          <div className="stat-value">
+            {runningResources.length || latestRun?.total_resources_scanned || 0}
+          </div>
+          <div style={{ fontSize: 11, color: '#f39c12', marginTop: 4 }}>
+            {runningResources.filter(r => r.is_waste).length || latestRun?.waste_candidates_count || 0} waste candidates found
+          </div>
+        </div>
+      </div>
+
+      {/* LIVE RUNNING AWS COMPONENTS SECTION */}
+      <div className="glass-panel" style={{ marginBottom: 24, padding: 20 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Server size={18} color="#6c5ce7" /> Live Running AWS Components ({runningResources.length})
+            </h3>
+            <div style={{ fontSize: 12, color: '#a0a4a8', marginTop: 2 }}>
+              Inspect all components running in your AWS account and delete any wasteful resources directly
             </div>
           </div>
-          <div className="table-container mt-4">
-            <table>
-              <thead>
-                <tr>
-                  <th>Bucket Name</th><th>Estimated Size</th><th>Created On</th><th>Public Access</th><th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.s3.map(b => (
-                  <tr key={b.name}>
-                    <td style={{ fontWeight: '700', color: '#fff' }}>{b.name}</td>
-                    <td>{b.size_mb > 0 ? `${b.size_mb.toFixed(1)} MB` : '--'}</td>
-                    <td>{new Date(b.creation_date).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}</td>
-                    <td><span className="status-badge" style={{ background: '#ffffff05', color: '#a0a4a8' }}>Block Public</span></td>
-                    <td>
-                      <button onClick={() => handleAction(`/aws/s3/delete/${b.name}`, `Permanently delete S3 Bucket ${b.name}?`)} className="btn btn-danger btn-sm" disabled={!isAdmin}>
-                        <Trash2 size={14} className="mr-1" /> Delete
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-                {data.s3.length === 0 && <tr><td colSpan="5" style={{ textAlign: 'center', padding: 40, color: 'var(--text-secondary)' }}>No S3 storage buckets detected.</td></tr>}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
 
-      {activeTab === 'RDS' && (
-        <div className="glass-panel animate-fade-in">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <h2>Managed Databases (RDS)</h2>
-            {!isAdmin && <span style={{ fontSize: 12, color: 'var(--danger-color)' }}>View-only Mode</span>}
-          </div>
-          <div className="table-container mt-4">
-            <table>
-              <thead>
+          <a href="/resources" style={{ color: '#6c5ce7', fontSize: 12, textDecoration: 'none', fontWeight: 600 }}>
+            View Full Inventory →
+          </a>
+        </div>
+
+        {/* Running Resources Table */}
+        <div className="table-container" style={{ maxHeight: 380, overflowY: 'auto' }}>
+          <table>
+            <thead>
+              <tr>
+                <th>Component Name & ID</th>
+                <th>Service Type</th>
+                <th>State</th>
+                <th>Monthly Cost</th>
+                <th>Status / Waste Finding</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading || scanningLive ? (
                 <tr>
-                  <th>Identifier</th><th>Engine</th><th>Instance Class</th><th>Status</th><th>Actions</th>
+                  <td colSpan="6" style={{ textAlign: 'center', padding: 30, color: '#a0a4a8' }}>
+                    <RefreshCw className="animate-spin mb-2" size={20} />
+                    <div>Scanning live AWS account infrastructure...</div>
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {data.rds.map(db => (
-                  <tr key={db.id}>
-                    <td style={{ fontWeight: '700', color: '#fff' }}>{db.id}</td>
-                    <td style={{ textTransform: 'capitalize' }}>{db.engine}</td>
-                    <td><code>{db.size}</code></td>
-                    <td><span className={`status-badge status-${db.state === 'available' ? 'running' : 'stopped'}`}>{db.state}</span></td>
+              ) : runningResources.length === 0 ? (
+                <tr>
+                  <td colSpan="6" style={{ textAlign: 'center', padding: 30, color: '#a0a4a8' }}>
+                    No running components detected. Click "Scan AWS Infrastructure" to inspect account.
+                  </td>
+                </tr>
+              ) : (
+                runningResources.slice(0, 8).map(r => (
+                  <tr key={r.resource_id}>
                     <td>
-                      {db.state === 'available' && (
-                        <button onClick={() => handleAction(`/aws/rds/stop/${db.id}`, `Suspend RDS database ${db.id}?`)} className="btn btn-warning btn-sm" disabled={!isAdmin}>
-                          <Square size={14} className="mr-1" /> Stop
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        {renderServiceIcon(r.resource_type)}
+                        <div>
+                          <div style={{ fontWeight: 700, color: '#fff', fontSize: 13 }}>{r.name}</div>
+                          <div style={{ fontFamily: 'monospace', fontSize: 11, color: '#a0a4a8', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {r.resource_id}
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      <code style={{ fontSize: 11, textTransform: 'uppercase' }}>{r.resource_type}</code>
+                    </td>
+                    <td>
+                      <span className={`status-badge status-${['running', 'available', 'active'].includes(r.state?.toLowerCase()) ? 'running' : 'stopped'}`}>
+                        {r.state}
+                      </span>
+                    </td>
+                    <td style={{ fontWeight: 700, color: r.is_waste ? '#2ed573' : '#fff' }}>
+                      ${r.monthly_cost ? r.monthly_cost.toFixed(2) : '0.00'}/mo
+                    </td>
+                    <td>
+                      {r.is_waste ? (
+                        <span style={{
+                          background: '#ff475720', color: '#ff4757', padding: '3px 8px', borderRadius: 4,
+                          fontSize: 11, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 4
+                        }}>
+                          <AlertTriangle size={12} /> {r.waste_finding}
+                        </span>
+                      ) : (
+                        <span style={{ color: '#2ed573', fontSize: 11, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                          <CheckCircle size={12} /> In Use / Retained
+                        </span>
+                      )}
+                    </td>
+                    <td>
+                      {r.state?.toLowerCase() === 'terminated' || r.state?.toLowerCase() === 'deleted' ? (
+                        <span style={{ color: '#777', fontSize: 11, fontStyle: 'italic' }}>Terminated</span>
+                      ) : (
+                        <button
+                          onClick={() => {
+                            setSelectedForDelete(r);
+                            setDeleteConfirmed(false);
+                            setDeleteResult(null);
+                          }}
+                          className="btn btn-sm btn-danger"
+                          style={{
+                            padding: '4px 10px', fontSize: 11, fontWeight: 700,
+                            display: 'inline-flex', alignItems: 'center', gap: 4,
+                            background: '#ff475718', border: '1px solid #ff475750', color: '#ff4757'
+                          }}
+                          title="Terminate / Delete this component"
+                        >
+                          <Trash2 size={12} /> Delete
                         </button>
                       )}
                     </td>
                   </tr>
-                ))}
-                {data.rds.length === 0 && <tr><td colSpan="5" style={{ textAlign: 'center', padding: 40, color: 'var(--text-secondary)' }}>No RDS database instances found.</td></tr>}
-              </tbody>
-            </table>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* QUICK AGENT LAUNCH & CANDIDATES OVERVIEW */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 24 }}>
+        {/* LATEST CLEANUP CANDIDATES */}
+        <div className="glass-panel">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+            <h3 style={{ margin: 0, fontSize: 16 }}>Active Cleanup Plan Candidates</h3>
+            <a href="/cleanup-plan" style={{ color: '#6c5ce7', fontSize: 12, textDecoration: 'none', fontWeight: 600 }}>
+              View Full Plan →
+            </a>
+          </div>
+
+          {!latestPlan || !latestPlan.candidates || latestPlan.candidates.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '40px 0', color: '#a0a4a8' }}>
+              <CheckCircle size={32} color="#2ed573" style={{ margin: '0 auto 8px' }} />
+              <div>No active waste candidates in the current plan.</div>
+              <div style={{ fontSize: 12, marginTop: 4 }}>Trigger a scan from the Agent Console to inspect your account.</div>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {latestPlan.candidates.slice(0, 5).map(c => (
+                <div key={c.resource_id} style={{
+                  padding: 12, background: 'rgba(255,255,255,0.02)', borderRadius: 6,
+                  border: '1px solid rgba(255,255,255,0.06)', display: 'flex', justifyContent: 'space-between', alignItems: 'center'
+                }}>
+                  <div>
+                    <div style={{ fontWeight: 700, color: '#fff', fontSize: 13 }}>{c.name}</div>
+                    <div style={{ fontFamily: 'monospace', fontSize: 11, color: '#a0a4a8' }}>
+                      {c.resource_type.toUpperCase()} • {c.resource_id}
+                    </div>
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ color: '#2ed573', fontWeight: 700, fontSize: 14 }}>
+                      ${c.monthly_cost.toFixed(2)}/mo
+                    </div>
+                    <div style={{ fontSize: 10, color: '#f39c12' }}>{c.waste_finding}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* AGENT DISPATCH PROMPT CARD */}
+        <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+              <Bot size={24} color="#6c5ce7" />
+              <h3 style={{ margin: 0, fontSize: 16 }}>Deploy Cloud Cost Janitor</h3>
+            </div>
+            <p style={{ color: 'var(--text-secondary)', fontSize: 13, lineHeight: 1.6 }}>
+              The agent autonomously connects to live AWS APIs, identifies idle compute, unattached storage,
+              and orphaned balancers, calculates waste, and stops for human approval.
+            </p>
+            <div style={{
+              background: 'rgba(0,0,0,0.3)', padding: 12, borderRadius: 6,
+              fontSize: 12, color: '#a0a4a8', marginTop: 12, fontFamily: 'monospace'
+            }}>
+              "Find the AWS resources that are costing me money but appear unused."
+            </div>
+          </div>
+
+          <div style={{ marginTop: 20 }}>
+            <a href="/agent" className="btn btn-primary" style={{ width: '100%', textAlign: 'center', textDecoration: 'none', padding: '12px 0' }}>
+              Launch in Agent Control Center <ArrowRight size={16} className="inline ml-1" />
+            </a>
           </div>
         </div>
-      )}
+      </div>
 
-      {activeTab === 'Lambda' && (
-        <div className="glass-panel animate-fade-in">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <h2>Serverless Functions (Lambda)</h2>
-            <span className="status-badge status-running" style={{ fontSize: 11 }}>{data.lambda.length} Functions</span>
-          </div>
-          <div className="table-container mt-4">
-            <table>
-              <thead>
-                <tr>
-                  <th>Function Name</th><th>Runtime environment</th><th>Memory</th><th>Last Modified</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.lambda.map(fn => (
-                  <tr key={fn.name}>
-                    <td style={{ fontWeight: '700', color: '#fff' }}>{fn.name}</td>
-                    <td><code style={{ color: 'var(--accent-color)' }}>{fn.runtime}</code></td>
-                    <td>128 MB</td>
-                    <td>{new Date(fn.last_modified).toLocaleDateString()}</td>
-                  </tr>
-                ))}
-                {data.lambda.length === 0 && <tr><td colSpan="4" style={{ textAlign: 'center', padding: 40, color: 'var(--text-secondary)' }}>No Lambda functions discovered.</td></tr>}
-              </tbody>
-            </table>
+      {/* DIRECT COMPONENT TERMINATION MODAL */}
+      {selectedForDelete && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(8px)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, padding: 20
+        }}>
+          <div className="glass-panel animate-fade-in" style={{
+            maxWidth: 540, width: '100%', padding: 28,
+            border: '1px solid rgba(255, 71, 87, 0.4)',
+            boxShadow: '0 20px 50px rgba(0,0,0,0.8)'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <div style={{ background: '#ff475720', border: '1px solid #ff475750', padding: 10, borderRadius: 10 }}>
+                  <ShieldAlert size={28} color="#ff4757" />
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, color: '#fff', fontSize: 18 }}>Confirm Component Deletion</h3>
+                  <div style={{ color: '#a0a4a8', fontSize: 12, marginTop: 2 }}>
+                    Safe destructive termination via isolated sandbox
+                  </div>
+                </div>
+              </div>
+              <button 
+                onClick={() => setSelectedForDelete(null)}
+                style={{ background: 'transparent', border: 'none', color: '#a0a4a8', cursor: 'pointer' }}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Component Summary Card */}
+            <div style={{ background: 'rgba(0,0,0,0.4)', borderRadius: 8, padding: 16, marginBottom: 20 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, fontSize: 13 }}>
+                <div>
+                  <span style={{ color: '#a0a4a8', fontSize: 11 }}>RESOURCE NAME:</span>
+                  <div style={{ fontWeight: 700, color: '#fff' }}>{selectedForDelete.name}</div>
+                </div>
+                <div>
+                  <span style={{ color: '#a0a4a8', fontSize: 11 }}>SERVICE TYPE:</span>
+                  <div style={{ fontWeight: 700, color: '#6c5ce7', textTransform: 'uppercase' }}>
+                    {selectedForDelete.resource_type}
+                  </div>
+                </div>
+                <div>
+                  <span style={{ color: '#a0a4a8', fontSize: 11 }}>RESOURCE ID:</span>
+                  <div style={{ fontFamily: 'monospace', fontSize: 12, color: '#e0e0e0', wordBreak: 'break-all' }}>
+                    {selectedForDelete.resource_id}
+                  </div>
+                </div>
+                <div>
+                  <span style={{ color: '#a0a4a8', fontSize: 11 }}>MONTHLY COST:</span>
+                  <div style={{ fontWeight: 700, color: '#2ed573' }}>
+                    ${selectedForDelete.monthly_cost ? selectedForDelete.monthly_cost.toFixed(2) : '0.00'}/mo
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Execution Result Feedback */}
+            {deleteResult && (
+              <div style={{
+                padding: 14, borderRadius: 8, marginBottom: 20,
+                background: deleteResult.success ? 'rgba(46, 213, 115, 0.15)' : 'rgba(255, 71, 87, 0.15)',
+                border: `1px solid ${deleteResult.success ? '#2ed573' : '#ff4757'}`,
+                display: 'flex', alignItems: 'center', gap: 10
+              }}>
+                {deleteResult.success ? <CheckCircle color="#2ed573" size={20} /> : <AlertCircle color="#ff4757" size={20} />}
+                <div>
+                  <div style={{ fontWeight: 700, color: '#fff', fontSize: 13 }}>
+                    {deleteResult.success ? "Resource Successfully Terminated" : "Termination Blocked or Failed"}
+                  </div>
+                  <div style={{ fontSize: 12, color: '#ccc', marginTop: 2 }}>
+                    {deleteResult.message || deleteResult.error}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {!deleteResult?.success && (
+              <>
+                <div style={{
+                  background: 'rgba(255, 71, 87, 0.08)', border: '1px solid rgba(255, 71, 87, 0.25)',
+                  borderRadius: 8, padding: 14, marginBottom: 20, fontSize: 12, color: '#ff7979', lineHeight: 1.5
+                }}>
+                  <strong>WARNING:</strong> This action will permanently delete/terminate this resource in your AWS account. Pre-deletion safety verification will ensure no accidental collisions occur before sandboxed deletion.
+                </div>
+
+                <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', marginBottom: 24 }}>
+                  <input
+                    type="checkbox"
+                    checked={deleteConfirmed}
+                    onChange={e => setDeleteConfirmed(e.target.checked)}
+                    style={{ width: 18, height: 18, accentColor: '#ff4757' }}
+                  />
+                  <span style={{ fontSize: 13, color: '#fff', fontWeight: 600 }}>
+                    I authorize the immediate termination of this component.
+                  </span>
+                </label>
+              </>
+            )}
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+              <button 
+                onClick={() => setSelectedForDelete(null)}
+                className="btn btn-sm"
+                style={{ background: 'rgba(255,255,255,0.06)', color: '#fff' }}
+              >
+                {deleteResult?.success ? "Close" : "Cancel"}
+              </button>
+
+              {!deleteResult?.success && (
+                <button
+                  onClick={handleConfirmDelete}
+                  disabled={!deleteConfirmed || deleting}
+                  className="btn btn-sm btn-danger"
+                  style={{
+                    background: deleteConfirmed ? '#ff4757' : 'rgba(255, 71, 87, 0.3)',
+                    color: '#fff', fontWeight: 800, display: 'flex', alignItems: 'center', gap: 6,
+                    padding: '8px 18px'
+                  }}
+                >
+                  {deleting ? <RefreshCw className="animate-spin" size={14} /> : <Trash2 size={14} />}
+                  <span>{deleting ? "Terminating in AWS..." : "Confirm & Terminate Now"}</span>
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}

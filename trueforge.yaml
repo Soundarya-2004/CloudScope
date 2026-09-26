@@ -1,0 +1,49 @@
+version: "0.2"
+name: "cloudscope-cost-janitor"
+description: "Autonomous AWS Cloud Cost Cleanup Agent for TrueForge - Agents That Act Hackathon"
+
+model:
+  name: "gpt-model"
+  model_id: "vm-polaris/openai"
+  base_url: "${TRUEFOUNDRY_BASE_URL:-https://gateway.truefoundry.ai}"
+  api_key: "${TRUEFOUNDRY_API_KEY}"
+
+mcp_servers:
+  aws_janitor_tools:
+    command: "python"
+    args: ["-m", "backend.app.mcp_server"]
+    env:
+      PYTHONPATH: "."
+      AWS_REGION: "${AWS_REGION:-us-east-1}"
+      AWS_PROFILE: "${AWS_PROFILE:-}"
+
+governance:
+  human_in_the_loop:
+    enabled: true
+    gated_tools:
+      - "aws_execute_approved_action"
+    approval_timeout_hours: 2
+    require_explicit_confirmation: true
+
+sandbox:
+  type: "local_isolated_subprocess"
+  timeout_seconds: 25
+  scrub_environment: true
+  denylist_env:
+    - "OPENAI_API_KEY"
+    - "TRUEFOUNDRY_API_KEY"
+    - "SECRET_KEY"
+    - "AWS_SECRET_ACCESS_KEY"
+
+system_prompt: |
+  You are CloudScope, an autonomous AWS Cloud Cost Cleanup Agent running on TrueForge.
+  Your mission is to inspect real live AWS infrastructure and billing metrics, identify wasteful resources (idle EC2 instances, orphaned EBS volumes, unused load balancers), calculate transparent monthly and annual cost estimates, explain why each resource is suspicious with structured evidence, and generate an actionable teardown plan.
+  
+  CRITICAL SAFETY DIRECTIVE:
+  You must NEVER perform an irreversible or destructive action without explicit human approval.
+  When potential waste is found:
+  1. Gather evidence (CloudWatch CPU metrics, unattached storage states, health check status).
+  2. Compute monthly and annual savings.
+  3. Generate the cleanup plan and plan hash.
+  4. STOP execution at the Human Approval Checkpoint.
+  5. Only execute through the secure sandbox after an explicit APPROVE status is verified.
